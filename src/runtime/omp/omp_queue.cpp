@@ -212,7 +212,7 @@ result
 launch_kernel_from_so(omp_sscp_executable_object::omp_sscp_kernel *kernel,
                       const rt::range<3> &num_groups,
                       const rt::range<3> &local_size, unsigned shared_memory,
-                      void **kernel_args) {
+                      int num_threads, void **kernel_args) {
   // *** Do NOT change these values without changing also on the compiler side
   //     in host/StaticLocalMemoryPass.cpp ***
   // for internal use in group algorithms
@@ -249,7 +249,7 @@ launch_kernel_from_so(omp_sscp_executable_object::omp_sscp_kernel *kernel,
 #endif
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(num_threads)
 #endif
   {
     // get page aligned local memory from heap
@@ -417,6 +417,7 @@ result omp_queue::submit_kernel(kernel_operation &op, const dag_node_ptr& node) 
     rt::dag_node* node_ptr = node.get();
     auto instrumentation_guard = instrumentation_setup.instrument_task();
 
+    _num_threads = select_num_threads(node);
     auto err = op.get_launcher().invoke(backend_id, params, cap, node_ptr);
     if(!err.is_success())
       rt::register_error(err);
@@ -547,7 +548,7 @@ result omp_queue::submit_sscp_kernel_from_code_object(
           kernel_name);
 
   auto err = launch_kernel_from_so(kernel, num_groups, group_size, local_mem_size,
-                                   _arg_mapper.get_mapped_args());
+                                   _num_threads, _arg_mapper.get_mapped_args());
   on_kernel_launch_complete(kernel_name, obj);
   return err;
 
@@ -650,6 +651,19 @@ device_id omp_queue::get_device() const {
 
 void *omp_queue::get_native_type() const { return nullptr; }
 
+int omp_queue::select_num_threads(const dag_node_ptr &node) {
+#ifdef _OPENMP
+  if (node->get_execution_hints().has_hint<rt::hints::num_threads>()) {
+    return node->get_execution_hints().get_hint<rt::hints::num_threads>()->get_num_threads();
+  }
+  return omp_get_max_threads();
+#else
+  return 1;
+#endif
+}
+
+int omp_queue::get_num_threads() const { return _num_threads; }
+
 result omp_sscp_code_object_invoker::submit_kernel(
     const kernel_operation &op, hcf_object_id hcf_object,
     const rt::range<3> &num_groups, const rt::range<3> &group_size,
@@ -666,14 +680,10 @@ result omp_sscp_code_object_invoker::submit_kernel(
 rt::range<3> omp_sscp_code_object_invoker::select_group_size(
     const rt::range<3> &global_range, const rt::range<3> &group_size) const {
   rt::range<3> selected_group_size = group_size;
-#ifdef _OPENMP
-  const int max_threads = omp_get_max_threads();
-#else
-  const int max_threads = 1;
-#endif
   constexpr auto divisor = 1;
-  auto z = std::min(
-      std::max<std::size_t>(global_range.get(0) / (max_threads * divisor), 16),
+  const auto num_threads = _queue->get_num_threads();
+  const auto z = std::min(
+      std::max<std::size_t>(global_range.get(0) / (num_threads * divisor), 16),
       std::min<std::size_t>(global_range.get(0), 1024));
   selected_group_size = rt::range<3>{z, 1, 1};
   return selected_group_size;

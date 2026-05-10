@@ -129,6 +129,17 @@ private:
 
 class instant_execution : public execution_hint {};
 
+class num_threads : public execution_hint {
+public:
+  num_threads() = default;
+  num_threads(int n) : _num_threads{n} {}
+
+  int get_num_threads() const { return _num_threads; }
+
+private:
+  int _num_threads = 0;
+};
+
 class request_instrumentation_submission_timestamp : public execution_hint {};
 class request_instrumentation_start_timestamp : public execution_hint {};
 class request_instrumentation_finish_timestamp : public execution_hint {};
@@ -194,6 +205,8 @@ private:
       _request_instrumentation_finish_timestamp;
 
   hints::instant_execution _instant_execution;
+
+  hints::num_threads _num_threads;
 };
 
 #define HIPSYCL_RT_HINTS_MAP_GETTER(name, member)                              \
@@ -220,6 +233,7 @@ HIPSYCL_RT_HINTS_MAP_GETTER(request_instrumentation_finish_timestamp,
                             _request_instrumentation_finish_timestamp);
 HIPSYCL_RT_HINTS_MAP_GETTER(instant_execution,
                             _instant_execution);
+HIPSYCL_RT_HINTS_MAP_GETTER(num_threads, _num_threads);
 
 struct allocation_hints {
   std::optional<const std::vector<size_t>> AdaptiveCpp_target_numa_node;

@@ -82,6 +82,13 @@ struct AdaptiveCpp_prefer_execution_lane : public detail::cg_property{
 
 struct AdaptiveCpp_coarse_grained_events : public detail::cg_property {};
 
+struct AdaptiveCpp_num_threads : public detail::cg_property {
+  AdaptiveCpp_num_threads(int num_threads)
+  : num_threads{num_threads} {}
+
+  const int num_threads;
+};
+
 // backwards compatibility
 template<int Dim>
 using hipSYCL_prefer_group_size = AdaptiveCpp_prefer_group_size<Dim>;
@@ -118,6 +125,13 @@ struct AdaptiveCpp_inorder_executor : public detail::queue_property {
 };
 
 struct AdaptiveCpp_retargetable : public detail::queue_property {};
+
+struct AdaptiveCpp_num_threads : public detail::queue_property {
+  AdaptiveCpp_num_threads(int num_threads)
+  : num_threads{num_threads} {}
+
+  const int num_threads;
+};
 
 // backwards compatibility
 using hipSYCL_coarse_grained_events = AdaptiveCpp_coarse_grained_events;
@@ -436,6 +450,13 @@ public:
             property::command_group::AdaptiveCpp_coarse_grained_events>()) {
       hints.set_hint(rt::hints::coarse_grained_synchronization{});
     }
+
+    if (prop_list.has_property<property::command_group::AdaptiveCpp_num_threads>()) {
+      const auto num_threads =
+          prop_list.get_property<property::command_group::AdaptiveCpp_num_threads>().num_threads;
+      hints.set_hint(rt::hints::num_threads{num_threads});
+    }
+
     // Should always have node_group hint from default hints
     assert(hints.has_hint<rt::hints::node_group>());
 
@@ -1176,6 +1197,12 @@ private:
 
     if(this->has_property<property::queue::AdaptiveCpp_retargetable>()) {
       _impl->is_retargetable = true;
+    }
+
+    if (this->has_property<property::queue::AdaptiveCpp_num_threads>()) {
+      const auto num_threads =
+          this->get_property<property::queue::AdaptiveCpp_num_threads>().num_threads;
+      _impl->default_hints.set_hint(rt::hints::num_threads{num_threads});
     }
 
     _impl->is_in_order = this->has_property<property::queue::in_order>();

@@ -84,7 +84,11 @@ public:
       const kernel_configuration &config) override;
 
   worker_thread& get_worker();
+
+  int get_num_threads() const;
 private:
+  static int select_num_threads(const dag_node_ptr &);
+
   const backend_id _backend_id;
   worker_thread _worker;
 
@@ -96,6 +100,8 @@ private:
   glue::jit::cxx_argument_mapper _arg_mapper;
   kernel_configuration _config;
   glue::jit::reflection_map _reflection_map;
+
+  int _num_threads;
 };
 
 }

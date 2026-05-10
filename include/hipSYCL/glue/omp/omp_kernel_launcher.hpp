@@ -70,15 +70,26 @@ inline int get_num_threads() {
 #endif
 }
 
+inline int select_num_threads(const rt::dag_node *node) {
+#ifdef _OPENMP
+  if (node->get_execution_hints().has_hint<rt::hints::num_threads>()) {
+    return node->get_execution_hints().get_hint<rt::hints::num_threads>()->get_num_threads();
+  }
+  return omp_get_max_threads();
+#else
+  return 1;
+#endif
+}
+
 template <class Function>
-void parallel_invocation(Function kernel) noexcept {
+void parallel_invocation(Function kernel, const int num_threads) noexcept {
 #ifndef _OPENMP
   HIPSYCL_DEBUG_WARNING
       << "omp_kernel_launcher: Kernel launcher was built without OpenMP "
          "support, the kernel will execute sequentially!"
       << std::endl;
 #else
-#pragma omp parallel
+#pragma omp parallel num_threads(num_threads)
 #endif
   {
     kernel();
@@ -127,7 +138,8 @@ void single_task_kernel(Function f) noexcept
 
 template <int Dim, class Function>
 inline void parallel_for_kernel(Function f,
-                                const sycl::range<Dim> execution_range) noexcept
+                                const sycl::range<Dim> execution_range,
+                                const int num_threads) noexcept
 {
   static_assert(Dim > 0 && Dim <= 3, "Only dimensions 1,2,3 are supported");
 
@@ -138,13 +150,14 @@ inline void parallel_for_kernel(Function f,
 
       f(this_item);
     });
-  });
+  }, num_threads);
 }
 
 template <int Dim, class Function>
 inline void parallel_for_kernel_offset(Function f,
                                        const sycl::range<Dim> execution_range,
-                                       const sycl::id<Dim> offset) noexcept {
+                                       const sycl::id<Dim> offset,
+                                       const int num_threads) noexcept {
   static_assert(Dim > 0 && Dim <= 3, "Only dimensions 1,2,3 are supported");
 
 
@@ -155,14 +168,14 @@ inline void parallel_for_kernel_offset(Function f,
 
       f(this_item);
     });
-  });
+  }, num_threads);
 }
 
 template <int Dim, class Function>
 inline void parallel_for_ndrange_kernel(
     Function f, const sycl::range<Dim> num_groups,
     const sycl::range<Dim> local_size, const sycl::id<Dim> offset,
-    size_t num_local_mem_bytes) noexcept
+    size_t num_local_mem_bytes, const int num_threads) noexcept
 {
   static_assert(Dim > 0 && Dim <= 3, "Only dimensions 1 - 3 are supported.");
 
@@ -213,14 +226,15 @@ inline void parallel_for_ndrange_kernel(
 #endif
 
     sycl::detail::host_local_memory::release();
-  });
+  }, num_threads);
 }
 
 template <int Dim, class Function>
 inline void parallel_for_workgroup(Function f,
                                    const sycl::range<Dim> num_groups,
                                    const sycl::range<Dim> local_size,
-                                   size_t num_local_mem_bytes) noexcept
+                                   size_t num_local_mem_bytes,
+                                   const int num_threads) noexcept
 {
   static_assert(Dim > 0 && Dim <= 3, "Only dimensions 1,2,3 are supported");  
 
@@ -235,7 +249,7 @@ inline void parallel_for_workgroup(Function f,
     });
 
     sycl::detail::host_local_memory::release();
-  });
+  }, num_threads);
 }
 
 template <class HierarchicalDecomposition,
@@ -243,7 +257,8 @@ template <class HierarchicalDecomposition,
 inline void parallel_region(Function f,
                             const sycl::range<dimensions> num_groups,
                             const sycl::range<dimensions> group_size,
-                            std::size_t num_local_mem_bytes)
+                            std::size_t num_local_mem_bytes,
+                            const int num_threads)
 {
   static_assert(dimensions > 0 && dimensions <= 3,
                 "Only dimensions 1,2,3 are supported");
@@ -265,7 +280,7 @@ inline void parallel_region(Function f,
     });
 
     sycl::detail::host_local_memory::release();
-  });
+  }, num_threads);
 }
 
 template<int Dim, int MaxGuaranteedWorkgroupSize>
@@ -342,6 +357,7 @@ public:
 #endif
 
     this->_invoker = [=] (rt::dag_node* node) mutable {
+      const auto num_threads = select_num_threads(node);
 
       static_cast<rt::kernel_operation *>(node->get_operation())
           ->initialize_embedded_pointers(k);
@@ -365,25 +381,25 @@ public:
 
       if constexpr(type == rt::kernel_type::single_task){
 
-        omp_dispatch::single_task_kernel(k);
+        omp_dispatch::single_task_kernel(k, num_threads);
 
       } else if constexpr (type == rt::kernel_type::basic_parallel_for) {
 
         if(!is_with_offset) {
-          omp_dispatch::parallel_for_kernel(k, global_range);
+          omp_dispatch::parallel_for_kernel(k, global_range, num_threads);
         } else {
-          omp_dispatch::parallel_for_kernel_offset(k, global_range, offset);
+          omp_dispatch::parallel_for_kernel_offset(k, global_range, offset, num_threads);
         }
 
       } else if constexpr (type == rt::kernel_type::ndrange_parallel_for) {
 
-        omp_dispatch::parallel_for_ndrange_kernel(
-            k, get_grid_range(), local_range, offset, dynamic_local_memory);
+        omp_dispatch::parallel_for_ndrange_kernel(k, get_grid_range(), local_range, offset,
+                                                  dynamic_local_memory, num_threads);
 
       } else if constexpr (type == rt::kernel_type::hierarchical_parallel_for) {
 
         omp_dispatch::parallel_for_workgroup(k, get_grid_range(), local_range,
-                                             dynamic_local_memory);
+                                             dynamic_local_memory, num_threads);
       } else if constexpr( type == rt::kernel_type::scoped_parallel_for) {
 
         auto local_range_is_divisible_by = [&](int x) -> bool {
@@ -400,35 +416,35 @@ public:
                        Dim, 64>());
 
           omp_dispatch::parallel_region<decomposition_type>(
-              k, get_grid_range(), local_range, dynamic_local_memory);
+              k, get_grid_range(), local_range, dynamic_local_memory, num_threads);
         } else if(local_range_is_divisible_by(32)) {
           using decomposition_type =
               decltype(omp_dispatch::determine_hierarchical_decomposition<
                        Dim, 32>());
 
           omp_dispatch::parallel_region<decomposition_type>(
-              k, get_grid_range(), local_range, dynamic_local_memory);
+              k, get_grid_range(), local_range, dynamic_local_memory, num_threads);
         } else if(local_range_is_divisible_by(16)) {
           using decomposition_type =
               decltype(omp_dispatch::determine_hierarchical_decomposition<
                        Dim, 16>());
 
           omp_dispatch::parallel_region<decomposition_type>(
-              k, get_grid_range(), local_range, dynamic_local_memory);
+              k, get_grid_range(), local_range, dynamic_local_memory, num_threads);
         } else if(local_range_is_divisible_by(8)) {
           using decomposition_type =
               decltype(omp_dispatch::determine_hierarchical_decomposition<Dim,
                                                                           8>());
 
           omp_dispatch::parallel_region<decomposition_type>(
-              k, get_grid_range(), local_range, dynamic_local_memory);
+              k, get_grid_range(), local_range, dynamic_local_memory, num_threads);
         } else {
           using decomposition_type =
               decltype(omp_dispatch::determine_hierarchical_decomposition<Dim,
                                                                           1>());
 
           omp_dispatch::parallel_region<decomposition_type>(
-              k, get_grid_range(), local_range, dynamic_local_memory);
+              k, get_grid_range(), local_range, dynamic_local_memory, num_threads);
         }
       } else if constexpr (type == rt::kernel_type::custom) {
         sycl::interop_handle handle{
